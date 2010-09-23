@@ -678,7 +678,7 @@ void Creature::DoFleeToGetAssistance()
         Creature* pCreature = NULL;
 
         MaNGOS::NearestAssistCreatureInCreatureRangeCheck u_check(this, getVictim(), radius);
-        MaNGOS::CreatureLastSearcher<MaNGOS::NearestAssistCreatureInCreatureRangeCheck> searcher(this, pCreature, u_check);
+        MaNGOS::CreatureLastSearcher<MaNGOS::NearestAssistCreatureInCreatureRangeCheck> searcher(pCreature, u_check);
         Cell::VisitGridObjects(this, searcher, radius);
 
         SetNoSearchAssistance(true);
@@ -1735,7 +1735,7 @@ void Creature::CallAssistance()
 
             {
                 MaNGOS::AnyAssistCreatureInRangeCheck u_check(this, getVictim(), radius);
-                MaNGOS::CreatureListSearcher<MaNGOS::AnyAssistCreatureInRangeCheck> searcher(this, assistList, u_check);
+                MaNGOS::CreatureListSearcher<MaNGOS::AnyAssistCreatureInRangeCheck> searcher(assistList, u_check);
                 Cell::VisitGridObjects(this,searcher, radius);
             }
 
