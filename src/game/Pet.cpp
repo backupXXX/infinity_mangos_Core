@@ -40,11 +40,14 @@ Pet::Pet(PetType type) :
 Creature(CREATURE_SUBTYPE_PET),
 m_resetTalentsCost(0), m_resetTalentsTime(0), m_usedTalentCount(0),
 m_removed(false), m_happinessTimer(7500), m_petType(type), m_duration(0),
-m_bonusdamage(0), m_auraUpdateMask(0), m_loading(false),
-m_declinedname(NULL), m_petModeFlags(PET_MODE_DEFAULT)
+m_auraUpdateMask(0),
+m_declinedname(NULL), m_petModeFlags(PET_MODE_DEFAULT),
+m_PetScalingData(NULL), m_baseBonusData(NULL)
 {
     m_name = "Pet";
     m_regenTimer = 4000;
+
+    m_baseBonusData = new PetScalingData;
 
     // pets always have a charminfo, even if they are not actually charmed
     CharmInfo* charmInfo = InitCharmInfo(this);
@@ -53,11 +56,18 @@ m_declinedname(NULL), m_petModeFlags(PET_MODE_DEFAULT)
         charmInfo->SetReactState(REACT_PASSIVE);
     else if(type == GUARDIAN_PET)                           // always aggressive
         charmInfo->SetReactState(REACT_AGGRESSIVE);
+
 }
 
 Pet::~Pet()
 {
     delete m_declinedname;
+
+    if (m_PetScalingData)
+        delete m_PetScalingData;
+
+    if (m_baseBonusData)
+        delete m_baseBonusData;
 }
 
 void Pet::AddToWorld()
@@ -282,15 +292,18 @@ bool Pet::LoadPetFromDB( Player* owner, uint32 petentry, uint32 petnumber, bool 
         CastPetAuras(current);
     }
 
+    CastPetPassiveAuras(true);
+    ApplyAllScalingBonuses(true);
+
     if (getPetType() == SUMMON_PET && !current)             //all (?) summon pets come with full health when called, but not when they are current
     {
         SetHealth(GetMaxHealth());
-        SetPower(POWER_MANA, GetMaxPower(POWER_MANA));
+        SetPower(getPowerType(), GetMaxPower(getPowerType()));
     }
     else
     {
         SetHealth(savedhealth > GetMaxHealth() ? GetMaxHealth() : savedhealth);
-        SetPower(POWER_MANA, savedmana > GetMaxPower(POWER_MANA) ? GetMaxPower(POWER_MANA) : savedmana);
+        SetPower(getPowerType(), savedmana > GetMaxPower(getPowerType()) ? GetMaxPower(getPowerType()) : savedmana);
     }
 
     UpdateWalkMode(owner);
@@ -529,19 +542,11 @@ void Pet::Update(uint32 diff)
                 }
             }
 
-            //regenerate focus for hunter pets or energy for deathknight's ghoul
+            //regenerate focus for hunter pets or energy for deathknight's ghoul or mana for demons
             if(m_regenTimer <= diff)
             {
-                switch (getPowerType())
-                {
-                    case POWER_FOCUS:
-                    case POWER_ENERGY:
-                        Regenerate(getPowerType());
-                        break;
-                    default:
-                        break;
-                }
-                m_regenTimer = 4000;
+                Regenerate(getPowerType(), diff);
+                m_regenTimer = 2000;
             }
             else
                 m_regenTimer -= diff;
@@ -773,39 +778,31 @@ bool Pet::InitStatsForLevel(uint32 petlevel, Unit* owner)
         }
     }
 
-    uint32 creature_ID = (getPetType() == HUNTER_PET) ? 1 : cinfo->Entry;
+    if (!petlevel)
+        petlevel = owner->getLevel();
 
     SetLevel(petlevel);
 
+    PetLevelInfo const* pInfo = sObjectMgr.GetPetLevelInfo(cinfo->Entry, petlevel);
+
     SetMeleeDamageSchool(SpellSchools(cinfo->dmgschool));
 
-    SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE, float(petlevel*50));
+    int32 createStats[MAX_STATS+7] =  {22,     // STAT_STRENGTH
+                                       22,     // STAT_AGILITY
+                                       25,     // STAT_STAMINA
+                                       28,     // STAT_INTELLECT
+                                       27,     // STAT_SPIRIT
+                                       42,     // Base HEALTH
+                                       20,     // Base POWER/MANA
+                                       10,     // Base AttackPower
+                                       5,      // Base MinDamage
+                                       10,     // Base MaxDamage
+                                       1,      // Base MinRangeDamage
+                                       3};     // Base MaxRangeDamage
 
-    SetAttackTime(BASE_ATTACK, BASE_ATTACK_TIME);
-    SetAttackTime(OFF_ATTACK, BASE_ATTACK_TIME);
-    SetAttackTime(RANGED_ATTACK, BASE_ATTACK_TIME);
+    uint32 createResistance[MAX_SPELL_SCHOOL] = {0,0,0,0,0,0,0};
 
-    SetFloatValue(UNIT_MOD_CAST_SPEED, 1.0);
-
-    CreatureFamilyEntry const* cFamily = sCreatureFamilyStore.LookupEntry(cinfo->family);
-    if(cFamily && cFamily->minScale > 0.0f && getPetType()==HUNTER_PET)
-    {
-        float scale;
-        if (getLevel() >= cFamily->maxScaleLevel)
-            scale = cFamily->maxScale;
-        else if (getLevel() <= cFamily->minScaleLevel)
-            scale = cFamily->minScale;
-        else
-            scale = cFamily->minScale + float(getLevel() - cFamily->minScaleLevel) / cFamily->maxScaleLevel * (cFamily->maxScale - cFamily->minScale);
-
-        SetObjectScale(scale);
-        UpdateModelData();
-    }
-    m_bonusdamage = 0;
-
-    int32 createResistance[MAX_SPELL_SCHOOL] = {0,0,0,0,0,0,0};
-
-    if(cinfo && getPetType() != HUNTER_PET)
+    if(cinfo) // Default create values (from creature_template)
     {
         createResistance[SPELL_SCHOOL_HOLY]   = cinfo->resistance1;
         createResistance[SPELL_SCHOOL_FIRE]   = cinfo->resistance2;
@@ -813,141 +810,160 @@ bool Pet::InitStatsForLevel(uint32 petlevel, Unit* owner)
         createResistance[SPELL_SCHOOL_FROST]  = cinfo->resistance4;
         createResistance[SPELL_SCHOOL_SHADOW] = cinfo->resistance5;
         createResistance[SPELL_SCHOOL_ARCANE] = cinfo->resistance6;
+        // Armor
+        createResistance[SPELL_SCHOOL_NORMAL] = int32(cinfo->armor  * petlevel / cinfo->maxlevel / (1 +  cinfo->rank));
+
+        for (int i = 0; i < MAX_STATS; ++i)
+            createStats[i] *= petlevel/10;
+
+        createStats[MAX_STATS]    = int32(cinfo->maxhealth * petlevel / cinfo->maxlevel / (1 +  cinfo->rank));
+        createStats[MAX_STATS+1]  = int32(cinfo->maxmana * petlevel / cinfo->maxlevel / (1 +  cinfo->rank));
+        createStats[MAX_STATS+2]  = int32(cinfo->attackpower * petlevel / cinfo->maxlevel / (1 +  cinfo->rank));
+        createStats[MAX_STATS+3]  = int32( cinfo->mindmg * petlevel / cinfo->maxlevel / (1 + cinfo->rank));
+        createStats[MAX_STATS+4]  = int32( cinfo->maxdmg * petlevel / cinfo->maxlevel / (1 + cinfo->rank));
+        createStats[MAX_STATS+5]  = int32(cinfo->minrangedmg * petlevel / cinfo->maxlevel/ (1 + cinfo->rank));
+        createStats[MAX_STATS+6]  = int32(cinfo->maxrangedmg * petlevel / cinfo->maxlevel/ (1 + cinfo->rank));
+        SetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE, float(cinfo->maxrangedmg * petlevel / cinfo->maxlevel));
+        setPowerType(Powers(cinfo->powerType));
+        SetAttackTime(BASE_ATTACK, cinfo->baseattacktime);
+        SetAttackTime(RANGED_ATTACK, cinfo->rangeattacktime);
+    }
+    else
+    {
+        SetAttackTime(BASE_ATTACK, BASE_ATTACK_TIME);
+        SetAttackTime(RANGED_ATTACK, BASE_ATTACK_TIME);
+
+        for (int i = 0; i < MAX_STATS+7; ++i)
+            createStats[i] *= petlevel/10;
+        // Armor
+        createResistance[SPELL_SCHOOL_NORMAL] = petlevel*50;
     }
 
     switch(getPetType())
     {
         case SUMMON_PET:
         {
-            if(owner->GetTypeId() == TYPEID_PLAYER)
-            {
-                switch(owner->getClass())
-                {
-                    case CLASS_WARLOCK:
-                    {
-
-                        //the damage bonus used for pets is either fire or shadow damage, whatever is higher
-                        uint32 fire  = owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_FIRE);
-                        uint32 shadow = owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_SHADOW);
-                        uint32 val  = (fire > shadow) ? fire : shadow;
-
-                        SetBonusDamage(int32 (val * 0.15f));
-                        //bonusAP += val * 0.57;
-                        break;
-                    }
-                    case CLASS_MAGE:
-                    {
-                                                            //40% damage bonus of mage's frost damage
-                        float val = owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_FROST) * 0.4f;
-                        if(val < 0)
-                            val = 0;
-                        SetBonusDamage( int32(val));
-                        break;
-                    }
-                    default:
-                        break;
-                }
-            }
-
-            SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, float(petlevel - (petlevel / 4)) );
-            SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, float(petlevel + (petlevel / 4)) );
-
-            //SetModifierValue(UNIT_MOD_ATTACK_POWER, BASE_VALUE, float(cinfo->attackpower));
-
-            PetLevelInfo const* pInfo = sObjectMgr.GetPetLevelInfo(creature_ID, petlevel);
-            if(pInfo)                                       // exist in DB
-            {
-                SetCreateHealth(pInfo->health);
-                SetCreateMana(pInfo->mana);
-
-                if(pInfo->armor > 0)
-                    SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE, float(pInfo->armor));
-
-                for(int stat = 0; stat < MAX_STATS; ++stat)
-                {
-                    SetCreateStat(Stats(stat), float(pInfo->stats[stat]));
-                }
-            }
-            else                                            // not exist in DB, use some default fake data
-            {
-                sLog.outErrorDb("Summoned pet (Entry: %u) not have pet stats data in DB",cinfo->Entry);
-
-                // remove elite bonuses included in DB values
-                SetCreateHealth(uint32(((float(cinfo->maxhealth) / cinfo->maxlevel) / (1 + 2 * cinfo->rank)) * petlevel) );
-                SetCreateMana(  uint32(((float(cinfo->maxmana)   / cinfo->maxlevel) / (1 + 2 * cinfo->rank)) * petlevel) );
-
-                SetCreateStat(STAT_STRENGTH, 22);
-                SetCreateStat(STAT_AGILITY, 22);
-                SetCreateStat(STAT_STAMINA, 25);
-                SetCreateStat(STAT_INTELLECT, 28);
-                SetCreateStat(STAT_SPIRIT, 27);
-            }
+            if (cinfo->family == CREATURE_FAMILY_GHOUL)
+                setPowerType(POWER_ENERGY);
             break;
         }
         case HUNTER_PET:
         {
+            if (!pInfo)         //If no pet levelstats in DB - use 1 for default hunter pet
+                pInfo = sObjectMgr.GetPetLevelInfo(1, petlevel);
+
+            CreatureFamilyEntry const* cFamily = sCreatureFamilyStore.LookupEntry(cinfo->family);
+            if(cFamily && cFamily->minScale > 0.0f && getPetType()==HUNTER_PET)
+            {
+                float scale;
+                if (getLevel() >= cFamily->maxScaleLevel)
+                    scale = cFamily->maxScale;
+                else if (getLevel() <= cFamily->minScaleLevel)
+                    scale = cFamily->minScale;
+                else
+                    scale = cFamily->minScale + float(getLevel() - cFamily->minScaleLevel) / cFamily->maxScaleLevel * (cFamily->maxScale - cFamily->minScale);
+
+                SetObjectScale(scale);
+                UpdateModelData();
+            }
+
             SetUInt32Value(UNIT_FIELD_PETNEXTLEVELEXP, sObjectMgr.GetXPForPetLevel(petlevel));
-            //these formula may not be correct; however, it is designed to be close to what it should be
-            //this makes dps 0.5 of pets level
-            SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, float(petlevel - (petlevel / 4)) );
-            //damage range is then petlevel / 2
-            SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, float(petlevel + (petlevel / 4)) );
-            //damage is increased afterwards as strength and pet scaling modify attack power
-
-            //stored standard pet stats are entry 1 in pet_levelinfo
-            PetLevelInfo const* pInfo = sObjectMgr.GetPetLevelInfo(creature_ID, petlevel);
-            if(pInfo)                                       // exist in DB
-            {
-                SetCreateHealth(pInfo->health);
-                SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE, float(pInfo->armor));
-                //SetModifierValue(UNIT_MOD_ATTACK_POWER, BASE_VALUE, float(cinfo->attackpower));
-
-                for( int i = STAT_STRENGTH; i < MAX_STATS; ++i)
-                {
-                    SetCreateStat(Stats(i),  float(pInfo->stats[i]));
-                }
-            }
-            else                                            // not exist in DB, use some default fake data
-            {
-                sLog.outErrorDb("Hunter pet levelstats missing in DB");
-
-                // remove elite bonuses included in DB values
-                SetCreateHealth( uint32(((float(cinfo->maxhealth) / cinfo->maxlevel) / (1 + 2 * cinfo->rank)) * petlevel) );
-
-                SetCreateStat(STAT_STRENGTH, 22);
-                SetCreateStat(STAT_AGILITY, 22);
-                SetCreateStat(STAT_STAMINA, 25);
-                SetCreateStat(STAT_INTELLECT, 28);
-                SetCreateStat(STAT_SPIRIT, 27);
-            }
+            setPowerType(POWER_FOCUS);
             break;
         }
         case GUARDIAN_PET:
+        {
             SetUInt32Value(UNIT_FIELD_PETEXPERIENCE, 0);
             SetUInt32Value(UNIT_FIELD_PETNEXTLEVELEXP, 1000);
-
-            SetCreateMana(28 + 10*petlevel);
-            SetCreateHealth(28 + 30*petlevel);
-
-            // FIXME: this is wrong formula, possible each guardian pet have own damage formula
-            //these formula may not be correct; however, it is designed to be close to what it should be
-            //this makes dps 0.5 of pets level
-            SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, float(petlevel - (petlevel / 4)));
-            //damage range is then petlevel / 2
-            SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, float(petlevel + (petlevel / 4)));
+            // DK ghouls have energy
+            if (cinfo->family == CREATURE_FAMILY_GHOUL)
+                setPowerType(POWER_ENERGY);
             break;
+        }
         default:
+        {
             sLog.outError("Pet have incorrect type (%u) for levelup.", getPetType());
+            return true;
             break;
+        }
+    }
+
+    if(pInfo)                                       // exist in DB
+    {
+        if (pInfo->health)
+            SetCreateHealth(pInfo->health);
+        else
+            SetCreateHealth(createStats[MAX_STATS]);
+
+        if (pInfo->mana)
+            SetCreateMana(pInfo->mana);
+        else
+            SetCreateMana(createStats[MAX_STATS+1]);
+
+        if (pInfo->armor)
+            SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE, float(pInfo->armor));
+        else
+            SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE,  float(createResistance[SPELL_SCHOOL_NORMAL]));
+
+        for( int i = STAT_STRENGTH; i < MAX_STATS; ++i)
+            if (pInfo->stats[i])
+               SetCreateStat(Stats(i), float(pInfo->stats[i]));
+            else
+               SetCreateStat(Stats(i), float(createStats[i]));
+
+        if (pInfo->attackpower)
+            SetModifierValue(UNIT_MOD_ATTACK_POWER, BASE_VALUE, float(pInfo->attackpower));
+        else
+            SetModifierValue(UNIT_MOD_ATTACK_POWER, BASE_VALUE, float(createStats[MAX_STATS+2]));
+
+        if (pInfo->mindmg)
+            SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, float(pInfo->mindmg));
+        else
+            SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, float(createStats[MAX_STATS+3]));
+
+        if (pInfo->maxdmg)
+            SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, float(pInfo->maxdmg));
+        else
+            SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, float(createStats[MAX_STATS+4]));
+
+        SetFloatValue(UNIT_FIELD_MINRANGEDDAMAGE,float(createStats[MAX_STATS+5]));
+        SetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE,float(createStats[MAX_STATS+6]));
+
+        DEBUG_LOG("Pet %u stats for level initialized (from pet_levelstat values)", cinfo->Entry);
+    }
+    else                                            // not exist in DB, use some default fake data
+    {
+        DEBUG_LOG("Summoned pet (Entry: %u) not have pet stats data in DB. Use hardcoded values.",cinfo->Entry);
+        for (int i = STAT_STRENGTH; i < MAX_STATS; ++i)
+            SetCreateStat(Stats(i),float(createStats[i]));
+
+        SetCreateHealth(createStats[MAX_STATS]);
+        SetCreateMana(createStats[MAX_STATS+1]);
+        SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE,  float(createResistance[SPELL_SCHOOL_NORMAL]));
+
+        SetModifierValue(UNIT_MOD_ATTACK_POWER, BASE_VALUE, float(createStats[MAX_STATS+2]));
+
+        SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, float(createStats[MAX_STATS+3]));
+        SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, float(createStats[MAX_STATS+4]));
+
+        SetFloatValue(UNIT_FIELD_MINRANGEDDAMAGE, float(createStats[MAX_STATS+5]));
+        SetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE, float(createStats[MAX_STATS+6]));
+
+        DEBUG_LOG("Pet %u stats for level initialized (from creature_template values)", cinfo->Entry);
     }
 
     for (int i = SPELL_SCHOOL_HOLY; i < MAX_SPELL_SCHOOL; ++i)
-        SetModifierValue(UnitMods(UNIT_MOD_RESISTANCE_START + i), BASE_VALUE, float(createResistance[i]));
+            SetModifierValue(UnitMods(UNIT_MOD_RESISTANCE_START + i), BASE_VALUE, float(createResistance[i]));
+
+    SetModifierValue(UNIT_MOD_ATTACK_POWER, BASE_PCT, 1.0f);
+    SetAttackTime(OFF_ATTACK, BASE_ATTACK_TIME);
+    SetFloatValue(UNIT_MOD_CAST_SPEED, 1.0f);
+
 
     UpdateAllStats();
 
     SetHealth(GetMaxHealth());
-    SetPower(POWER_MANA, GetMaxPower(POWER_MANA));
+    SetPower(getPowerType(), GetMaxPower(getPowerType()));
 
     return true;
 }
@@ -1188,6 +1204,8 @@ void Pet::_LoadAuras(uint32 timediff)
 
         delete result;
     }
+    else if (getPetType() != HUNTER_PET)
+        LoadCreaturesAddon(true);
 }
 
 void Pet::_SaveAuras()
@@ -1913,8 +1931,14 @@ void Pet::learnSpellHighRank(uint32 spellid)
 void Pet::SynchronizeLevelWithOwner()
 {
     Unit* owner = GetOwner();
-    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+    if (!owner)
         return;
+
+    if (owner->GetTypeId() != TYPEID_PLAYER)
+    {
+        GivePetLevel(owner->getLevel());
+        return;
+    }
 
     switch(getPetType())
     {
@@ -1951,4 +1975,796 @@ void Pet::ApplyModeFlags(PetModeFlags mode, bool apply)
     data << GetObjectGuid();
     data << uint32(m_petModeFlags);
     ((Player*)owner)->GetSession()->SendPacket(&data);
+}
+
+void Pet::ApplyStatScalingBonus(Stats stat, bool apply)
+{
+    if(stat > STAT_SPIRIT || stat < STAT_STRENGTH )
+        return;
+
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    UnitMods unitMod = UnitMods(stat);
+
+//    int32 newStat  = int32((owner->GetModifierValue(unitMod, BASE_VALUE) + owner->GetCreateStat(stat)) * owner->GetModifierValue(unitMod, BASE_PCT));
+
+    int32 newStat  = owner->GetTotalStatValue(stat);
+
+    if (m_baseBonusData->statScale[stat] == newStat && !apply)
+        return;
+
+    m_baseBonusData->statScale[stat] = newStat;
+
+    int32 basePoints = int32(m_baseBonusData->statScale[stat] * (CalculateScalingData()->statScale[stat] / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_STAT);
+
+    for (AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (Stats(spellproto->EffectMiscValue[i]) == stat
+                && spellproto->EffectBasePoints[i] == 0)
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+    if(needRecalculateStat)
+        UpdateStats(stat);
+}
+
+void Pet::ApplyResistanceScalingBonus(uint32 school, bool apply)
+{
+    if(school < SPELL_SCHOOL_NORMAL || school > SPELL_SCHOOL_ARCANE)
+        return;
+
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    int32 newResistance;
+
+    if (school == SPELL_SCHOOL_NORMAL)
+        newResistance = owner->GetArmor();
+    else
+        newResistance = owner->GetResistance(SpellSchools(school));
+
+    if (m_baseBonusData->resistanceScale[school] == newResistance && !apply)
+        return;
+
+    m_baseBonusData->resistanceScale[school] = newResistance;
+
+    int32 basePoints = int32(m_baseBonusData->resistanceScale[school] * (CalculateScalingData()->resistanceScale[school] / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_RESISTANCE);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (spellproto->EffectBasePoints[i] == 0
+            && (spellproto->EffectMiscValue[i] & (1 << SpellSchools(school))))
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+
+    if(needRecalculateStat)
+    {
+        if (school == SPELL_SCHOOL_NORMAL)
+            UpdateArmor();
+        else
+            UpdateResistances(school);
+    }
+}
+
+void Pet::ApplyAttackPowerScalingBonus(bool apply)
+{
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    int32 newAPBonus;
+
+    switch(getPetType())
+    {
+        case SUMMON_PET:
+        {
+            switch(owner->getClass())
+            {
+                case CLASS_WARLOCK:
+                {
+                   int32 fire  = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_FIRE)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_FIRE);
+                   int32 shadow = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_SHADOW)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_SHADOW);
+                   newAPBonus  = (fire > shadow) ? fire : shadow;
+                   if(newAPBonus < 0)
+                       newAPBonus = 0;
+                    break;
+                }
+                case CLASS_DEATH_KNIGHT:
+                    newAPBonus = owner->GetTotalAttackPowerValue(BASE_ATTACK);
+                    break;
+                case CLASS_SHAMAN:
+                    newAPBonus = owner->GetTotalAttackPowerValue(BASE_ATTACK);
+                    break;
+                case CLASS_MAGE:
+                {
+                   newAPBonus = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_FROST)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_FROST);
+                   if(newAPBonus < 0)
+                       newAPBonus = 0;
+                   break;
+                }
+                default:
+                    break;
+            }
+            break;
+        }
+        case HUNTER_PET:
+            newAPBonus = owner->GetTotalAttackPowerValue(RANGED_ATTACK);
+            break;
+        default:
+            break;
+    }
+
+    if (m_baseBonusData->attackpowerScale == newAPBonus && !apply)
+        return;
+
+    m_baseBonusData->attackpowerScale = newAPBonus;
+
+    int32 basePoints = int32(m_baseBonusData->attackpowerScale * (CalculateScalingData()->attackpowerScale / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_ATTACK_POWER);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (spellproto->EffectBasePoints[i] == 0)
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+
+    if(needRecalculateStat)
+    {
+        UpdateAttackPowerAndDamage();
+        UpdateAttackPowerAndDamage(true);
+    }
+}
+
+void Pet::ApplyDamageScalingBonus(bool apply)
+{
+    // SpellPower for pets exactly same DamageBonus.
+    //    m_baseBonusData->damageScale
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    int32 newDamageBonus;
+
+    switch(getPetType())
+    {
+        case SUMMON_PET:
+        {
+            switch(owner->getClass())
+            {
+                case CLASS_WARLOCK:
+                {
+                   int32 fire  = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_FIRE)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_FIRE);
+                   int32 shadow = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_SHADOW)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_SHADOW);
+                   newDamageBonus  = (fire > shadow) ? fire : shadow;
+                   if(newDamageBonus < 0)
+                       newDamageBonus = 0;
+                    break;
+                }
+                case CLASS_PRIEST:
+                {
+                   newDamageBonus = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_SHADOW)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_SHADOW);
+                   if(newDamageBonus < 0)
+                       newDamageBonus = 0;
+                    break;
+                }
+                case CLASS_DEATH_KNIGHT:
+                    newDamageBonus = owner->GetTotalAttackPowerValue(BASE_ATTACK);
+                    break;
+                case CLASS_SHAMAN:
+                    newDamageBonus = owner->GetTotalAttackPowerValue(BASE_ATTACK);
+                    break;
+                case CLASS_MAGE:
+                {
+                   newDamageBonus = int32(owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + SPELL_SCHOOL_FROST)) - owner->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + SPELL_SCHOOL_FROST);
+                   if(newDamageBonus < 0)
+                       newDamageBonus = 0;
+                   break;
+                }
+                default:
+                    break;
+            }
+            break;
+        }
+        case HUNTER_PET:
+            newDamageBonus = owner->GetTotalAttackPowerValue(RANGED_ATTACK);
+            break;
+        default:
+            break;
+    }
+
+    if (m_baseBonusData->damageScale == newDamageBonus && !apply)
+        return;
+
+    m_baseBonusData->damageScale = newDamageBonus;
+
+    int32 basePoints = int32(m_baseBonusData->damageScale * (CalculateScalingData()->damageScale / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_DAMAGE_DONE);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+                                                                            // Damage scaling auras has only 126 && 127 school_mask
+        if (spellproto->EffectBasePoints[i] == 0
+            && (spellproto->EffectMiscValue[i] == SPELL_SCHOOL_MASK_MAGIC
+                || spellproto->EffectMiscValue[i] == SPELL_SCHOOL_MASK_ALL))
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+
+    if(needRecalculateStat)
+        UpdateSpellPower();
+}
+
+void Pet::ApplyAllScalingBonuses(bool apply)
+{
+    for (int i = STAT_STRENGTH; i < MAX_STATS; ++i)
+        ApplyStatScalingBonus(Stats(i),apply);
+
+    for (int i = SPELL_SCHOOL_NORMAL; i < MAX_SPELL_SCHOOL; ++i)
+        ApplyResistanceScalingBonus(SpellSchools(i), apply);
+
+    ApplyAttackPowerScalingBonus(apply);
+
+    ApplyDamageScalingBonus(apply);
+
+    ApplyHitScalingBonus(apply);
+
+    ApplySpellHitScalingBonus(apply);
+
+    ApplyExpertizeScalingBonus(apply);
+
+    ApplyPowerregenScalingBonus(apply);
+}
+
+void Pet::ApplyHitScalingBonus(bool apply)
+{
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+    int32 m_MeleeHitChance = owner->GetTotalAuraModifier(SPELL_AURA_MOD_HIT_CHANCE);
+    m_MeleeHitChance +=  ((Player*)owner)->GetRatingBonusValue(CR_HIT_MELEE);
+
+    if (m_baseBonusData->meleeHitScale == m_MeleeHitChance && !apply)
+        return;
+
+    m_baseBonusData->meleeHitScale = m_MeleeHitChance;
+
+    int32 basePoints = int32(m_baseBonusData->meleeHitScale * (CalculateScalingData()->meleeHitScale / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_HIT_CHANCE);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (spellproto->EffectBasePoints[i] == 0)
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+}
+
+void Pet::ApplySpellHitScalingBonus(bool apply)
+{
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    int32 m_SpellHitChance = owner->GetTotalAuraModifier(SPELL_AURA_MOD_SPELL_HIT_CHANCE);
+    m_SpellHitChance += ((Player*)owner)->GetRatingBonusValue(CR_HIT_SPELL);
+
+    if (m_baseBonusData->spellHitScale == m_SpellHitChance && !apply)
+        return;
+
+    m_baseBonusData->spellHitScale = m_SpellHitChance;
+
+    int32 basePoints = int32(m_baseBonusData->spellHitScale * (CalculateScalingData()->spellHitScale / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_SPELL_HIT_CHANCE);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (spellproto->EffectBasePoints[i] == 0)
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+}
+
+void Pet::ApplyExpertizeScalingBonus(bool apply)
+{
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+    int32 m_expertize = owner->GetUInt32Value(PLAYER_EXPERTISE);
+
+    if (m_baseBonusData->expertizeScale == m_expertize && !apply)
+        return;
+
+    m_baseBonusData->expertizeScale = m_expertize;
+
+    int32 basePoints = int32(m_baseBonusData->expertizeScale * (CalculateScalingData()->expertizeScale / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_EXPERTISE);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (spellproto->EffectBasePoints[i] == 0)
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+
+}
+
+void Pet::ApplyPowerregenScalingBonus(bool apply)
+{
+    Unit* owner = GetOwner();
+
+    // Don't apply scaling bonuses if no owner or owner is not player
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    int32 m_manaregen = int32(owner->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER));
+
+    if (m_baseBonusData->powerregenScale == m_manaregen && !apply)
+        return;
+
+    m_baseBonusData->powerregenScale = m_manaregen;
+
+    int32 basePoints = int32(m_baseBonusData->powerregenScale * (CalculateScalingData()->powerregenScale / 100.0f));
+
+    bool needRecalculateStat = false;
+
+    if (basePoints == 0)
+        needRecalculateStat = true;
+
+    AuraList const& scalingAuras = GetAurasByType(SPELL_AURA_MOD_POWER_REGEN);
+
+    for(AuraList::const_iterator itr = scalingAuras.begin(); itr != scalingAuras.end(); ++itr)
+    {
+        Aura* _aura = (*itr);
+        if (!_aura || _aura->IsInUse())
+            continue;
+
+        SpellAuraHolder* holder = _aura->GetHolder();
+
+        if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->GetCasterGUID() != GetGUID())
+            continue;
+
+        SpellEntry const *spellproto = holder->GetSpellProto();
+
+        if (!spellproto)
+            continue;
+
+        SpellEffectIndex i = _aura->GetEffIndex();
+
+        if (spellproto->EffectBasePoints[i] == 0)
+        {
+            SetCanModifyStats(false);
+            if (ReapplyScalingAura(holder, spellproto, i, basePoints))
+                needRecalculateStat = true;
+            SetCanModifyStats(true);
+            break;
+        }
+    }
+
+    if(needRecalculateStat)
+        UpdateManaRegen();
+}
+
+Unit* Pet::GetOwner() const
+{
+    Unit* pOwner = Unit::GetOwner();
+
+    if (pOwner) return pOwner;
+
+    else if (!IsInWorld())
+        if (uint64 ownerguid = GetOwnerGUID())
+            if (Map* pMap = GetMap())
+                return pMap->GetAnyTypeCreature(ownerguid);
+
+    return NULL;
+}
+
+
+bool Pet::ReapplyScalingAura(SpellAuraHolder* holder, SpellEntry const *spellproto, SpellEffectIndex index, int32 basePoints)
+{
+    if (!holder || holder->IsDeleted() || holder->IsEmptyHolder() || holder->IsInUse())
+        return false;
+
+    holder->SetInUse(true);
+    RemoveSingleAuraFromSpellAuraHolder(holder, index);
+
+    Aura* aura = CreateAura(spellproto, index, &basePoints, holder, this, this, NULL);
+    aura->SetAuraDuration(aura->GetAuraMaxDuration());
+
+    holder->AddAura(aura, index);
+    AddAuraToModList(aura);
+    aura->ApplyModifier(true,true);
+
+    holder->SetInUse(false);
+
+    return true;
+}
+
+void Pet::CastPetPassiveAuras(bool current)
+{
+    Unit* owner = GetOwner();
+
+    if(!owner || owner->GetTypeId()!=TYPEID_PLAYER)
+        return;
+
+    // Cast pet passive aura (if not casted as passive)
+    uint32 creature_id;
+
+    switch(getPetType())
+    {
+        case SUMMON_PET:
+            creature_id = GetEntry();
+            break;
+        case HUNTER_PET:
+            creature_id = 1;
+            break;
+        default:
+            creature_id = 0;
+            break;
+    }
+
+    PetPassiveAuraList const* pPassiveAuraList  =  sSpellMgr.GetPetPassiveAuraList(creature_id);
+
+    if (!pPassiveAuraList || pPassiveAuraList->empty())
+        return;
+
+    for (PetPassiveAuraList::const_iterator itr = pPassiveAuraList->begin(); itr != pPassiveAuraList->end(); ++itr)
+    {
+        PetAura const petAura = *itr;
+
+        uint32 auraID = petAura.GetAura(creature_id);
+
+        if (!current && HasAura(auraID))
+            RemoveAurasDueToSpell(auraID);
+        else if (current && !HasAura(auraID))
+        {
+            CastSpell(this, auraID, true);
+            DEBUG_LOG("Cast passive pet aura %u", auraID);
+        }
+    }
+}
+
+PetScalingData* Pet::CalculateScalingData(bool recalculate)
+{
+    if (m_PetScalingData && !recalculate)
+        return m_PetScalingData;
+
+    delete m_PetScalingData;
+
+    m_PetScalingData = new PetScalingData;
+
+    Unit* owner = GetOwner();
+
+    PetScalingDataList const* pScalingDataList;
+
+    if (!owner || owner->GetTypeId() != TYPEID_PLAYER)        // if no owner ising record for creature_id = 0. Must be exist.
+        pScalingDataList = sObjectMgr.GetPetScalingData(0);
+    else if (getPetType() == HUNTER_PET)                      // Using creature_id = 1 for hunter pets
+        pScalingDataList = sObjectMgr.GetPetScalingData(1);
+    else
+        pScalingDataList = sObjectMgr.GetPetScalingData(GetEntry());
+
+    if (!pScalingDataList)
+    {
+        pScalingDataList = sObjectMgr.GetPetScalingData(0);   // if no records in DB ising record for creature_id = 0. Must be exist.
+    }
+
+    if (pScalingDataList->empty())                            // Zero values...
+        return m_PetScalingData;
+
+    for (PetScalingDataList::const_iterator itr = pScalingDataList->begin(); itr != pScalingDataList->end(); ++itr)
+    {
+         PetScalingData* pData = *itr;
+
+         if (!pData->creatureID || (owner && (!pData->requiredAura || owner->HasSpell(pData->requiredAura) || owner->HasAura(pData->requiredAura))))
+         {
+             m_PetScalingData->healthBasepoint  += pData->healthBasepoint;
+             m_PetScalingData->healthScale      += pData->healthScale;
+             m_PetScalingData->powerBasepoint   += pData->powerBasepoint;
+             m_PetScalingData->powerScale       += pData->powerScale;
+             m_PetScalingData->APBasepoint      += pData->APBasepoint;
+             m_PetScalingData->APBaseScale      += pData->APBaseScale;
+             m_PetScalingData->attackpowerScale += pData->attackpowerScale;
+             m_PetScalingData->damageScale      += pData->damageScale;
+             m_PetScalingData->spellHitScale    += pData->spellHitScale;
+             m_PetScalingData->meleeHitScale    += pData->meleeHitScale;
+             m_PetScalingData->expertizeScale   += pData->expertizeScale;
+             m_PetScalingData->attackspeedScale += pData->attackspeedScale;
+             m_PetScalingData->critScale        += pData->critScale;
+             m_PetScalingData->powerregenScale  += pData->powerregenScale;
+             for (int i = 0; i < MAX_STATS; i++)
+             {
+                  m_PetScalingData->statScale[i] = pData->statScale[i];
+             }
+             for (int i = 0; i < MAX_SPELL_SCHOOL; i++)
+             {
+                  m_PetScalingData->resistanceScale[i] = pData->resistanceScale[i];
+             }
+         }
+    }
+    return m_PetScalingData;
+}
+
+// diff contains the time in milliseconds since last regen.
+void Pet::Regenerate(Powers power, uint32 diff)
+{
+    uint32 curValue = GetPower(power);
+    uint32 maxValue = GetMaxPower(power);
+
+    float addvalue = 0.0f;
+
+    switch (power)
+    {
+        case POWER_MANA:
+        {
+            bool recentCast = IsUnderLastManaUseEffect();
+            float ManaIncreaseRate = sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_MANA);
+            if (recentCast)
+            {
+                // Mangos Updates Mana in intervals of 2s, which is correct
+                addvalue = GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) *  ManaIncreaseRate * 2.00f;
+            }
+            else
+            {
+                addvalue = GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER) * ManaIncreaseRate * 2.00f;
+            }
+        }   break;
+        case POWER_RAGE:                                    // Regenerate rage ?
+        {
+            float RageDecreaseRate = sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_RAGE_LOSS);
+            addvalue = 20 * RageDecreaseRate;               // 2 rage by tick (= 2 seconds => 1 rage/sec)
+        }   break;
+        case POWER_ENERGY:                                  // Regenerate energy (ghoul)
+        {
+            float EnergyRate = sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_ENERGY);
+            addvalue = 20 * EnergyRate;
+            break;
+        }
+        case POWER_FOCUS:                                   // Hunter pets
+        {
+            addvalue = 12 * sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_FOCUS);
+            break;
+        }
+        case POWER_RUNIC_POWER:
+        case POWER_RUNE:
+        case POWER_HAPPINESS:
+        case POWER_HEALTH:
+            break;
+    }
+
+    // Mana regen calculated in Pet::UpdateManaRegen()
+    // Exist only for POWER_MANA, POWER_ENERGY, POWER_FOCUS auras
+    if(power != POWER_MANA)
+    {
+        AuraList const& ModPowerRegenPCTAuras = GetAurasByType(SPELL_AURA_MOD_POWER_REGEN_PERCENT);
+        for(AuraList::const_iterator i = ModPowerRegenPCTAuras.begin(); i != ModPowerRegenPCTAuras.end(); ++i)
+            if ((*i)->GetModifier()->m_miscvalue == power)
+                addvalue *= ((*i)->GetModifier()->m_amount + 100) / 100.0f;
+    }
+
+    // addvalue computed on a 2sec basis. => update to diff time
+    addvalue *= float(diff) / REGEN_TIME_FULL;
+
+    if (power != POWER_RAGE )
+    {
+        curValue += uint32(addvalue);
+        if (curValue > maxValue)
+            curValue = maxValue;
+    }
+    else
+    {
+        if(curValue <= uint32(addvalue))
+            curValue = 0;
+        else
+            curValue -= uint32(addvalue);
+    }
+    SetPower(power, curValue);
 }

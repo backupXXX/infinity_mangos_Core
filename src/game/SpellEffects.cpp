@@ -4078,7 +4078,6 @@ void Spell::DoSummon(SpellEffectIndex eff_idx)
 
     spawnCreature->SetOwnerGUID(m_caster->GetGUID());
     spawnCreature->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_NONE);
-    spawnCreature->setPowerType(POWER_MANA);
     spawnCreature->setFaction(m_caster->getFaction());
     spawnCreature->SetUInt32Value(UNIT_FIELD_FLAGS, 0);
     spawnCreature->SetUInt32Value(UNIT_FIELD_BYTES_0, 2048);
@@ -4098,12 +4097,16 @@ void Spell::DoSummon(SpellEffectIndex eff_idx)
     spawnCreature->AIM_Initialize();
     spawnCreature->InitPetCreateSpells();
     spawnCreature->InitLevelupSpellsForLevel();
-    spawnCreature->SetHealth(spawnCreature->GetMaxHealth());
-    spawnCreature->SetPower(POWER_MANA, spawnCreature->GetMaxPower(POWER_MANA));
 
     std::string name = m_caster->GetName();
     name.append(petTypeSuffix[spawnCreature->getPetType()]);
     spawnCreature->SetName( name );
+
+    spawnCreature->CastPetPassiveAuras(true);
+    spawnCreature->ApplyAllScalingBonuses(true);
+
+    spawnCreature->SetHealth(spawnCreature->GetMaxHealth());
+    spawnCreature->SetPower(spawnCreature->getPowerType(), spawnCreature->GetMaxPower(spawnCreature->getPowerType()));
 
     map->Add((Creature*)spawnCreature);
 
@@ -4511,7 +4514,6 @@ void Spell::DoSummonGuardian(SpellEffectIndex eff_idx, uint32 forceFaction)
             spawnCreature->SetDuration(duration);
 
         spawnCreature->SetOwnerGUID(m_caster->GetGUID());
-        spawnCreature->setPowerType(POWER_MANA);
         spawnCreature->SetUInt32Value(UNIT_NPC_FLAGS, spawnCreature->GetCreatureInfo()->npcflag);
         spawnCreature->setFaction(forceFaction ? forceFaction : m_caster->getFaction());
         spawnCreature->SetUInt32Value(UNIT_FIELD_FLAGS, 0);
@@ -4522,6 +4524,12 @@ void Spell::DoSummonGuardian(SpellEffectIndex eff_idx, uint32 forceFaction)
 
         spawnCreature->InitStatsForLevel(level, m_caster);
         spawnCreature->GetCharmInfo()->SetPetNumber(pet_number, false);
+
+        spawnCreature->CastPetPassiveAuras(true);
+        spawnCreature->ApplyAllScalingBonuses(true);
+
+        spawnCreature->SetHealth(spawnCreature->GetMaxHealth());
+        spawnCreature->SetPower(spawnCreature->getPowerType(), spawnCreature->GetMaxPower(spawnCreature->getPowerType()));
 
         spawnCreature->AIM_Initialize();
 
@@ -4859,6 +4867,10 @@ void Spell::EffectTameCreature(SpellEffectIndex /*eff_idx*/)
 
     pet->SavePetToDB(PET_SAVE_AS_CURRENT);
     plr->PetSpellInitialize();
+
+    pet->CastPetPassiveAuras(true);
+    pet->ApplyAllScalingBonuses(true);
+
 }
 
 void Spell::EffectSummonPet(SpellEffectIndex eff_idx)
@@ -4997,9 +5009,12 @@ void Spell::EffectSummonPet(SpellEffectIndex eff_idx)
         NewSummon->SetByteFlag(UNIT_FIELD_BYTES_2, 2, UNIT_CAN_BE_ABANDONED);
     }
 
+    NewSummon->CastPetPassiveAuras(true);
+    NewSummon->ApplyAllScalingBonuses(true);
+
     NewSummon->AIM_Initialize();
     NewSummon->SetHealth(NewSummon->GetMaxHealth());
-    NewSummon->SetPower(POWER_MANA, NewSummon->GetMaxPower(POWER_MANA));
+    NewSummon->SetPower(NewSummon->getPowerType(), NewSummon->GetMaxPower(NewSummon->getPowerType()));
 
     map->Add((Creature*)NewSummon);
 
