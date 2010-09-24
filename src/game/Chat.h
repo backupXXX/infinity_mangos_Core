@@ -314,8 +314,6 @@ class ChatHandler
         bool HandleModifyPhaseCommand(char* args);
         bool HandleModifyGenderCommand(char* args);
 
-        bool HandleModifyPowerTypeCommand(char* args);
-
         //-----------------------Npc Commands-----------------------
         bool HandleNpcAddCommand(char* args);
         bool HandleNpcAddMoveCommand(char* args);

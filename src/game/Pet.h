@@ -132,7 +132,6 @@ typedef std::vector<uint32> AutoSpellList;
 #define PET_FOLLOW_ANGLE M_PI_F/2
 
 class Player;
-struct PetScalingData;
 
 class Pet : public Creature
 {
@@ -179,6 +178,9 @@ class Pet : public Creature
         uint32 GetCurrentFoodBenefitLevel(uint32 itemlevel);
         void SetDuration(int32 dur) { m_duration = dur; }
 
+        int32 GetBonusDamage() { return m_bonusdamage; }
+        void SetBonusDamage(int32 damage) { m_bonusdamage = damage; }
+
         bool UpdateStats(Stats stat);
         bool UpdateAllStats();
         void UpdateResistances(uint32 school);
@@ -187,8 +189,6 @@ class Pet : public Creature
         void UpdateMaxPower(Powers power);
         void UpdateAttackPowerAndDamage(bool ranged = false);
         void UpdateDamagePhysical(WeaponAttackType attType);
-        void UpdateSpellPower();
-        void UpdateManaRegen();
 
         bool CanTakeMoreActiveSpells(uint32 SpellIconID);
         void ToggleAutocast(uint32 spellid, bool apply);
@@ -201,20 +201,6 @@ class Pet : public Creature
         void LearnPetPassives();
         void CastPetAuras(bool current);
         void CastPetAura(PetAura const* aura);
-
-        void Regenerate(Powers power, uint32 diff);
-        void CastPetPassiveAuras(bool current);
-        void ApplyStatScalingBonus(Stats stat, bool apply);
-        void ApplyResistanceScalingBonus(uint32 school, bool apply);
-        void ApplyAttackPowerScalingBonus(bool apply);
-        void ApplyDamageScalingBonus(bool apply);
-        void ApplyHitScalingBonus(bool apply);
-        void ApplySpellHitScalingBonus(bool apply);
-        void ApplyExpertizeScalingBonus(bool apply);
-        void ApplyPowerregenScalingBonus(bool apply);
-        void ApplyAllScalingBonuses(bool apply);
-        bool ReapplyScalingAura(SpellAuraHolder* holder, SpellEntry const *spellproto, SpellEffectIndex index, int32 basePoints);
-        PetScalingData* CalculateScalingData( bool recalculate = false );
 
         void _LoadSpellCooldowns();
         void _SaveSpellCooldowns();
@@ -254,8 +240,6 @@ class Pet : public Creature
         void SetAuraUpdateMask(uint8 slot) { m_auraUpdateMask |= (uint64(1) << slot); }
         void ResetAuraUpdateMask() { m_auraUpdateMask = 0; }
 
-        Unit* GetOwner() const;
-
         // overwrite Creature function for name localization back to WorldObject version without localization
         const char* GetNameForLocaleIdx(int32 locale_idx) const { return WorldObject::GetNameForLocaleIdx(locale_idx); }
 
@@ -266,11 +250,9 @@ class Pet : public Creature
         uint32  m_happinessTimer;
         PetType m_petType;
         int32   m_duration;                                 // time until unsummon (used mostly for summoned guardians and not used for controlled pets)
+        int32   m_bonusdamage;
         uint64  m_auraUpdateMask;
         bool    m_loading;
-
-        PetScalingData*  m_PetScalingData;
-        PetScalingData*  m_baseBonusData;
 
         DeclinedName *m_declinedname;
 

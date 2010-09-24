@@ -124,7 +124,7 @@ struct CreatureInfo
     uint32  MovementType;
     uint32  InhabitType;
     float   unk16;
-    float   power_mod;
+    float   unk17;
     bool    RacialLeader;
     uint32  questItems[6];
     uint32  movementId;
