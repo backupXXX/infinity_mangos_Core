@@ -1513,7 +1513,7 @@ void World::Update(uint32 diff)
 }
 
 /// Send a packet to all players (except self if mentioned)
-void World::SendGlobalMessage(WorldPacket *packet, WorldSession *self, uint32 team)
+void World::SendGlobalMessage(WorldPacket *packet, WorldSession *self, uint32 team, AccountTypes security)
 {
     SessionMap::const_iterator itr;
     for (itr = m_sessions.begin(); itr != m_sessions.end(); ++itr)
@@ -1521,6 +1521,7 @@ void World::SendGlobalMessage(WorldPacket *packet, WorldSession *self, uint32 te
         if (itr->second &&
             itr->second->GetPlayer() &&
             itr->second->GetPlayer()->IsInWorld() &&
+            itr->second->GetSecurity() >= security &&
             itr->second != self &&
             (team == 0 || itr->second->GetPlayer()->GetTeam() == team) )
         {
@@ -1597,6 +1598,25 @@ void World::SendWorldText(int32 string_id, ...)
     for(SessionMap::const_iterator itr = m_sessions.begin(); itr != m_sessions.end(); ++itr)
     {
         if(!itr->second || !itr->second->GetPlayer() || !itr->second->GetPlayer()->IsInWorld() )
+            continue;
+
+        wt_do(itr->second->GetPlayer());
+    }
+
+    va_end(ap);
+}
+
+/// Send a System Message to all players (except self if mentioned)
+void World::SendWorldTextWithSecurity(AccountTypes security, int32 string_id, ...)
+{
+    va_list ap;
+    va_start(ap, string_id);
+
+    MaNGOS::WorldWorldTextBuilder wt_builder(string_id, &ap);
+    MaNGOS::LocalizedPacketListDo<MaNGOS::WorldWorldTextBuilder> wt_do(wt_builder);
+    for(SessionMap::const_iterator itr = m_sessions.begin(); itr != m_sessions.end(); ++itr)
+    {
+        if(!itr->second || !itr->second->GetPlayer() || !itr->second->GetPlayer()->IsInWorld() || itr->second->GetSecurity() < security )
             continue;
 
         wt_do(itr->second->GetPlayer());
