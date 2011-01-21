@@ -22,6 +22,8 @@
 #include "Vehicle.h"
 #include "Unit.h"
 #include "Util.h"
+#include "InstanceData.h"
+#include "ZoneScript.h"
 #include "WorldPacket.h"
 #include "CreatureAI.h"
 

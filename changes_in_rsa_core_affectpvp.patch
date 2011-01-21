@@ -1,0 +1,268 @@
+From 7fabfcc806bc0d01ce0394c95a1ff0e62d180cca Mon Sep 17 00:00:00 2001
+From: /dev/rsa <kris13@bk.ru>
+Date: Sun, 5 Sep 2010 14:27:13 +0400
+Subject: [PATCH] [233] Change Object::_Create to accept ObjectGuid
+
+Conflicts:
+
+	src/game/Corpse.cpp
+	src/game/Creature.cpp
+	src/game/Item.cpp
+	src/game/Object.cpp
+	src/game/Vehicle.cpp
+---
+ src/game/Bag.cpp           |    2 +-
+ src/game/Corpse.cpp        |    6 +++---
+ src/game/Creature.cpp      |   12 +++---------
+ src/game/Creature.h        |    2 +-
+ src/game/DynamicObject.cpp |    2 +-
+ src/game/GameObject.cpp    |    2 +-
+ src/game/Item.cpp          |    4 ++--
+ src/game/Object.cpp        |    7 +++----
+ src/game/Object.h          |    4 ++--
+ src/game/Pet.cpp           |    2 +-
+ src/game/Player.cpp        |    4 ++--
+ src/game/Transports.cpp    |    2 +-
+ 12 files changed, 21 insertions(+), 28 deletions(-)
+
+diff --git a/src/game/Bag.cpp b/src/game/Bag.cpp
+index c2d3b74..fce680e 100644
+--- a/src/game/Bag.cpp
++++ b/src/game/Bag.cpp
+@@ -64,7 +64,7 @@ bool Bag::Create(uint32 guidlow, uint32 itemid, Player const* owner)
+     if(!itemProto || itemProto->ContainerSlots > MAX_BAG_SIZE)
+         return false;
+ 
+-    Object::_Create( guidlow, 0, HIGHGUID_CONTAINER );
++    Object::_Create(ObjectGuid(HIGHGUID_CONTAINER, guidlow));
+ 
+     SetEntry(itemid);
+     SetObjectScale(DEFAULT_OBJECT_SCALE);
+diff --git a/src/game/Corpse.cpp b/src/game/Corpse.cpp
+index 062a005..d616bc2 100644
+--- a/src/game/Corpse.cpp
++++ b/src/game/Corpse.cpp
+@@ -67,7 +67,7 @@ void Corpse::RemoveFromWorld()
+ 
+ bool Corpse::Create( uint32 guidlow )
+ {
+-    Object::_Create(guidlow, 0, HIGHGUID_CORPSE);
++    Object::_Create(ObjectGuid(HIGHGUID_CORPSE, guidlow));
+     return true;
+ }
+ 
+@@ -75,7 +75,7 @@ bool Corpse::Create( uint32 guidlow, Player *owner)
+ {
+     MANGOS_ASSERT(owner);
+ 
+-    WorldObject::_Create(guidlow, HIGHGUID_CORPSE, owner->GetPhaseMask());
++    WorldObject::_Create(ObjectGuid(HIGHGUID_CORPSE, guidlow), owner->GetPhaseMask());
+     Relocate(owner->GetPositionX(), owner->GetPositionY(), owner->GetPositionZ(), owner->GetOrientation());
+ 
+     //we need to assign owner's map for corpse
+@@ -159,7 +159,7 @@ bool Corpse::LoadFromDB(uint32 lowguid, Field *fields)
+     float orientation   = fields[5].GetFloat();
+     uint32 mapid        = fields[6].GetUInt32();
+ 
+-    Object::_Create(lowguid, 0, HIGHGUID_CORPSE);
++    Object::_Create(ObjectGuid(HIGHGUID_CORPSE, guid));
+ 
+     m_time = time_t(fields[7].GetUInt64());
+     m_type = CorpseType(fields[8].GetUInt32());
+diff --git a/src/game/Creature.cpp b/src/game/Creature.cpp
+index d11cd58..99ad1f4 100644
+--- a/src/game/Creature.cpp
++++ b/src/game/Creature.cpp
+@@ -718,7 +718,7 @@ bool Creature::Create(uint32 guidlow, Map *map, uint32 phaseMask, uint32 Entry,
+     SetPhaseMask(phaseMask,false);
+ 
+     //oX = x;     oY = y;    dX = x;    dY = y;    m_moveTime = 0;    m_startMove = 0;
+-    const bool bResult = CreateFromProto(guidlow, Entry, team, data);
++    const bool bResult = CreateFromProto(guid, Entry, team, data);
+ 
+     if (bResult)
+     {
+@@ -1159,17 +1159,11 @@ float Creature::GetSpellDamageMod(int32 Rank)
+     }
+ }
+ 
+-bool Creature::CreateFromProto(uint32 guidlow, uint32 Entry, uint32 team, const CreatureData *data)
++bool Creature::CreateFromProto(ObjectGuid guid, uint32 Entry, uint32 team, const CreatureData *data)
+ {
+-    CreatureInfo const *cinfo = ObjectMgr::GetCreatureTemplate(Entry);
+-    if(!cinfo)
+-    {
+-        sLog.outErrorDb("Creature entry %u does not exist.", Entry);
+-        return false;
+-    }
+     m_originalEntry = Entry;
+ 
+-    Object::_Create(guidlow, Entry, HIGHGUID_UNIT);
++    Object::_Create(guid);
+ 
+     if (!UpdateEntry(Entry, team, data, false))
+         return false;
+diff --git a/src/game/Creature.h b/src/game/Creature.h
+index 3c6843f..ca1ba8c 100644
+--- a/src/game/Creature.h
++++ b/src/game/Creature.h
+@@ -630,7 +630,7 @@ class MANGOS_DLL_SPEC Creature : public Unit
+         void SendAreaSpiritHealerQueryOpcode(Player *pl);
+ 
+     protected:
+-        bool CreateFromProto(uint32 guidlow,uint32 Entry,uint32 team, const CreatureData *data = NULL);
++        bool CreateFromProto(ObjectGuid guid, uint32 Entry, uint32 team, const CreatureData *data = NULL);
+         bool InitEntry(uint32 entry, uint32 team=ALLIANCE, const CreatureData* data=NULL);
+         void RelocationNotify();
+ 
+diff --git a/src/game/DynamicObject.cpp b/src/game/DynamicObject.cpp
+index 1c0c250..04f4e50 100644
+--- a/src/game/DynamicObject.cpp
++++ b/src/game/DynamicObject.cpp
+@@ -60,7 +60,7 @@ void DynamicObject::RemoveFromWorld()
+ 
+ bool DynamicObject::Create( uint32 guidlow, Unit *caster, uint32 spellId, SpellEffectIndex effIndex, float x, float y, float z, int32 duration, float radius )
+ {
+-    WorldObject::_Create(guidlow, HIGHGUID_DYNAMICOBJECT, caster->GetPhaseMask());
++    WorldObject::_Create(ObjectGuid(HIGHGUID_DYNAMICOBJECT, guidlow), caster->GetPhaseMask());
+     SetMap(caster->GetMap());
+     Relocate(x, y, z, 0);
+ 
+diff --git a/src/game/GameObject.cpp b/src/game/GameObject.cpp
+index d6b8f0d..af83ff0 100644
+--- a/src/game/GameObject.cpp
++++ b/src/game/GameObject.cpp
+@@ -115,7 +115,7 @@ bool GameObject::Create(uint32 guidlow, uint32 name_id, Map *map, uint32 phaseMa
+         return false;
+     }
+ 
+-    Object::_Create(guidlow, goinfo->id, HIGHGUID_GAMEOBJECT);
++    Object::_Create(ObjectGuid(HIGHGUID_GAMEOBJECT, goinfo->id, guidlow));
+ 
+     m_goInfo = goinfo;
+ 
+diff --git a/src/game/Item.cpp b/src/game/Item.cpp
+index 9d21d45..30265c6 100644
+--- a/src/game/Item.cpp
++++ b/src/game/Item.cpp
+@@ -247,7 +247,7 @@ Item::Item( )
+ 
+ bool Item::Create( uint32 guidlow, uint32 itemid, Player const* owner)
+ {
+-    Object::_Create( guidlow, 0, HIGHGUID_ITEM );
++    Object::_Create(ObjectGuid(HIGHGUID_ITEM, guidlow));
+ 
+     SetEntry(itemid);
+     SetObjectScale(DEFAULT_OBJECT_SCALE);
+@@ -354,7 +354,7 @@ bool Item::LoadFromDB(uint32 guidLow, uint64 owner_guid, QueryResult *result)
+ {
+     // create item before any checks for store correct guid
+     // and allow use "FSetState(ITEM_REMOVED); SaveToDB();" for deleting item from DB
+-    Object::_Create(guidLow, 0, HIGHGUID_ITEM);
++    Object::_Create(ObjectGuid(HIGHGUID_ITEM, guidlow));
+ 
+     bool delete_result = false;
+     if(!result)
+diff --git a/src/game/Object.cpp b/src/game/Object.cpp
+index 0efa961..2d99101 100644
+--- a/src/game/Object.cpp
++++ b/src/game/Object.cpp
+@@ -110,12 +110,11 @@ void Object::_InitValues()
+     m_objectUpdated = false;
+ }
+ 
+-void Object::_Create(uint32 guidlow, uint32 entry, HighGuid guidhigh)
++void Object::_Create(ObjectGuid guid)
+ {
+     if(!m_uint32Values)
+         _InitValues();
+ 
+-    ObjectGuid guid = ObjectGuid(guidhigh, entry, guidlow);
+     SetGuidValue(OBJECT_FIELD_GUID, guid);
+     SetUInt32Value(OBJECT_FIELD_TYPE, m_objectType);
+     m_PackGUID.Set(guid);
+@@ -1122,9 +1121,9 @@ void WorldObject::CleanupsBeforeDelete()
+     RemoveFromWorld();
+ }
+ 
+-void WorldObject::_Create( uint32 guidlow, HighGuid guidhigh, uint32 phaseMask )
++void WorldObject::_Create(ObjectGuid guid, uint32 phaseMask)
+ {
+-    Object::_Create(guidlow, 0, guidhigh);
++    Object::_Create(guid);
+     m_phaseMask = phaseMask;
+ }
+ 
+diff --git a/src/game/Object.h b/src/game/Object.h
+index afdb8fc..02fbab5 100644
+--- a/src/game/Object.h
++++ b/src/game/Object.h
+@@ -295,7 +295,7 @@ class MANGOS_DLL_SPEC Object
+         Object ( );
+ 
+         void _InitValues();
+-        void _Create (uint32 guidlow, uint32 entry, HighGuid guidhigh);
++        void _Create(ObjectGuid guid);
+ 
+         virtual void _SetUpdateBits(UpdateMask *updateMask, Player *target) const;
+ 
+@@ -345,7 +345,7 @@ class MANGOS_DLL_SPEC WorldObject : public Object
+ 
+         virtual void Update ( uint32 /*time_diff*/ ) { }
+ 
+-        void _Create( uint32 guidlow, HighGuid guidhigh, uint32 phaseMask);
++        void _Create(ObjectGuid guid, uint32 phaseMask);
+ 
+         void Relocate(float x, float y, float z, float orientation);
+         void Relocate(float x, float y, float z);
+diff --git a/src/game/Pet.cpp b/src/game/Pet.cpp
+index 24bb217..38bba2a 100644
+--- a/src/game/Pet.cpp
++++ b/src/game/Pet.cpp
+@@ -1878,7 +1878,7 @@ bool Pet::Create(uint32 guidlow, Map *map, uint32 phaseMask, uint32 Entry, uint3
+     SetMap(map);
+     SetPhaseMask(phaseMask,false);
+ 
+-    Object::_Create(guidlow, pet_number, HIGHGUID_PET);
++    Object::_Create(ObjectGuid(HIGHGUID_PET, pet_number, guidlow));
+ 
+     m_DBTableGuid = guidlow;
+     m_originalEntry = Entry;
+diff --git a/src/game/Player.cpp b/src/game/Player.cpp
+index 6e93054..0940047 100644
+--- a/src/game/Player.cpp
++++ b/src/game/Player.cpp
+@@ -659,7 +659,7 @@ bool Player::Create( uint32 guidlow, const std::string& name, uint8 race, uint8
+ {
+     //FIXME: outfitId not used in player creating
+ 
+-    Object::_Create(guidlow, 0, HIGHGUID_PLAYER);
++    Object::_Create(ObjectGuid(HIGHGUID_PLAYER, guidlow));
+ 
+     m_name = name;
+ 
+@@ -15335,7 +15335,7 @@ bool Player::LoadFromDB( uint32 guid, SqlQueryHolder *holder )
+         return false;
+     }
+ 
+-    Object::_Create( guid, 0, HIGHGUID_PLAYER );
++    Object::_Create(ObjectGuid(HIGHGUID_PLAYER, guid));
+ 
+     m_name = fields[2].GetCppString();
+ 
+diff --git a/src/game/Transports.cpp b/src/game/Transports.cpp
+index cef0579..182c501 100644
+--- a/src/game/Transports.cpp
++++ b/src/game/Transports.cpp
+@@ -150,7 +150,7 @@ bool Transport::Create(uint32 guidlow, uint32 mapid, float x, float y, float z,
+         return false;
+     }
+ 
+-    Object::_Create(guidlow, 0, HIGHGUID_MO_TRANSPORT);
++    Object::_Create(ObjectGuid(HIGHGUID_MO_TRANSPORT, guidlow));
+ 
+     GameObjectInfo const* goinfo = ObjectMgr::GetGameObjectInfo(guidlow);
+ 
+-- 
+1.7.0.2
+

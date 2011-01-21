@@ -51,6 +51,7 @@
 #include "Policies/SingletonImp.h"
 #include "BattleGroundMgr.h"
 #include "Language.h"
+#include "OutdoorPvPMgr.h"
 #include "TemporarySummon.h"
 #include "VMapFactory.h"
 #include "MoveMap.h"
@@ -65,7 +66,6 @@
 #include "Util.h"
 #include "CharacterDatabaseCleaner.h"
 #include "AuctionHouseBot.h"
-#include "Language.h"
 #include "playerbot/config.h"
 
 INSTANTIATE_SINGLETON_1( World );
@@ -1422,6 +1422,10 @@ void World::SetInitialWorldSettings()
     sLog.outString( "Starting BattleGround System" );
     sBattleGroundMgr.CreateInitialBattleGrounds();
     sBattleGroundMgr.InitAutomaticArenaPointDistribution();
+	
+    ///- Initialize outdoor pvp
+    sLog.outString( "Starting Outdoor PvP System" );
+    sOutdoorPvPMgr.InitOutdoorPvP();
 
     //Not sure if this can be moved up in the sequence (with static data loading) as it uses MapManager
     sLog.outString( "Loading Transports..." );
@@ -1626,6 +1630,7 @@ void World::Update(uint32 diff)
         sMapMgr.Update(diff);                // As interval = 0
 
         sBattleGroundMgr.Update(diff);
+        sOutdoorPvPMgr.Update(diff);
     }
 
     ///- Delete all characters which have been deleted X days before
