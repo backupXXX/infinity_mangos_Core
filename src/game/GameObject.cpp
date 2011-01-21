@@ -108,7 +108,7 @@ void GameObject::RemoveFromWorld()
     Object::RemoveFromWorld();
 }
 
-bool GameObject::Create(uint32 guidlow, uint32 name_id, Map *map, uint32 phaseMask, float x, float y, float z, float ang, float rotation0, float rotation1, float rotation2, float rotation3, uint32 animprogress, GOState go_state, uint32 artKit)
+bool GameObject::Create(uint32 guidlow, uint32 name_id, Map *map, uint32 phaseMask, float x, float y, float z, float ang, float rotation0, float rotation1, float rotation2, float rotation3, uint8 animprogress, GOState go_state, uint32 artKit)
 {
     MANGOS_ASSERT(map);
     Relocate(x,y,z,ang);
@@ -160,12 +160,6 @@ bool GameObject::Create(uint32 guidlow, uint32 name_id, Map *map, uint32 phaseMa
     SetGoType(GameobjectTypes(goinfo->type));
     SetGoArtKit(0);                                         // unknown what this is
     SetGoAnimProgress(animprogress);
-	
-    SetByteValue(GAMEOBJECT_BYTES_1, 2, artKit);
-
-    if (goinfo->type == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING)
-        m_goValue->destructibleBuilding.health = goinfo->destructibleBuilding.intactNumHits + goinfo->destructibleBuilding.damagedNumHits;
-
 
     if (goinfo->type == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING)
     {
@@ -173,14 +167,17 @@ bool GameObject::Create(uint32 guidlow, uint32 name_id, Map *map, uint32 phaseMa
         // destructible GO's show their "HP" as their animprogress
         SetGoAnimProgress(255);
     }
+	
+    SetByteValue(GAMEOBJECT_BYTES_1, 2, artKit);
+
+    if (goinfo->type == GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING)
+        m_goValue->destructibleBuilding.health = goinfo->destructibleBuilding.intactNumHits + goinfo->destructibleBuilding.damagedNumHits;
 
     //Notify the map's instance data.
     //Only works if you create the object in it, not if it is moves to that map.
     //Normally non-players do not teleport to other maps.
     if(map->IsDungeon() && ((InstanceMap*)map)->GetInstanceData())
         ((InstanceMap*)map)->GetInstanceData()->OnObjectCreate(this);
-		
-    SetZoneScript();
 
     if (goinfo->type == GAMEOBJECT_TYPE_TRANSPORT)
     {
@@ -188,6 +185,8 @@ bool GameObject::Create(uint32 guidlow, uint32 name_id, Map *map, uint32 phaseMa
         if (goinfo->transport.startOpen)
             SetGoState(GO_STATE_ACTIVE);
     }
+	
+    SetZoneScript();
 
     return true;
 }

@@ -1522,7 +1522,7 @@ uint32 ObjectMgr::AddGOData(uint32 entry, uint32 mapId, float x, float y, float 
     if(!map)
         return 0;
 
-    uint32 guid = GenerateLowGuid(HIGHGUID_GAMEOBJECT);
+    uint32 guid = GenerateLowGuid(HIGHGUID_GAMEOBJECT);   //ObjectGuid guid  instead of uint32 guid  ??
     GameObjectData& data = NewGOData(guid);
     data.id             = entry;
     data.mapid          = mapId;
@@ -5791,13 +5791,13 @@ bool ObjectMgr::AddGraveYardLink(uint32 id, uint32 zoneId, Team team, bool inDB)
     if(inDB)
     {
         WorldDatabase.PExecuteLog("INSERT INTO game_graveyard_zone ( id,ghost_zone,faction) "
-            "VALUES ('%u', '%u','%u')", id, zoneId, uint32(team));
+            "VALUES ('%u', '%u','%u')", id, zoneId, team);
     }
 
     return true;
 }
 // double check to see if (ObjectGuid guid)  is needed
-void ObjectMgr::RemoveGraveYardLink(uint32 id, uint32 zoneId, uint32 team, bool inDB)
+void ObjectMgr::RemoveGraveYardLink(uint32 id, uint32 zoneId, TEAM team, bool inDB)
 {
     GraveYardMap::iterator graveLow  = mGraveYardMap.lower_bound(zoneId);
     GraveYardMap::iterator graveUp   = mGraveYardMap.upper_bound(zoneId);

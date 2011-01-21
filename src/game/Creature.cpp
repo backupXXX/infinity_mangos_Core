@@ -1239,7 +1239,7 @@ bool Creature::CreateFromProto(ObjectGuid guid, uint32 Entry, Team team, const C
     SetZoneScript();
     if(m_zoneScript && data)
     {
-        Entry = m_zoneScript->GetCreatureEntry(guidlow, data);
+        Entry = m_zoneScript->GetCreatureEntry(guid, data);    // this has been changed guidlow to (guid, data)
         if(!Entry)
             return false;
     }
