@@ -90,6 +90,7 @@ void OPvPCapturePoint::AddGO(uint32 type, uint32 guid, uint32 entry)
             return;
         entry = data->id;
     }
+                                   // (ObjectGuid, entry(HIGHGUID_GAMEOBJECT, guid));   maybe 
     m_Objects[type] = MAKE_NEW_GUID(guid, entry, HIGHGUID_GAMEOBJECT);
     m_ObjectTypes[m_Objects[type]]=type;
 }
