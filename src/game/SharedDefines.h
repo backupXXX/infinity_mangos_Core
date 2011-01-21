@@ -550,7 +550,7 @@ enum TeamId
 enum Team
 {
     TEAM_OTHER          = 0,                         // if ReputationListId > 0 && Flags != FACTION_FLAG_TEAM_HEADER
-    //TEAM_NONE           = 0,                                // used when team value unknown or not set, 0 is also meaning that can be used !team check
+    TEAM_NONE           = 0,                                // used when team value unknown or not set, 0 is also meaning that can be used !team check
     HORDE               = 67,
     ALLIANCE            = 469,
 };
